@@ -64,9 +64,9 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
         ]
 
         # Bedrock Configuration (from environment variables)
-        cls.region = "ap-southeast-2"
-        cls.guardrail_id = "arn:aws:bedrock:ap-southeast-2:211125488087:guardrail/evdbjmiiolxc"
-        cls.guardrail_version = "DRAFT"
+        cls.region = os.getenv("aws_region", None)
+        cls.guardrail_id = os.getenv("guardrail_arn", None)
+        cls.guardrail_version = os.getenv("guardrail_version", None)
 
     def _test_sanitizer_flow(self, sanitizer, mode_name):
         logger.info(f"Testing mode: {mode_name}")

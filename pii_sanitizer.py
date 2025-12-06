@@ -7,10 +7,9 @@ import boto3
 from boto3 import Session
 from presidio_analyzer import AnalyzerEngine
 from presidio_analyzer.nlp_engine import NerModelConfiguration, TransformersNlpEngine
-from presidio_anonymizer import AnonymizerEngine, DeanonymizeEngine, OperatorConfig
+from presidio_anonymizer import AnonymizerEngine, OperatorConfig
 
 from instance_counter_anonymizer import InstanceCounterAnonymizer
-from instance_counter_deanonymizer import InstanceCounterDeanonymizer
 from invalid_param_exception import InvalidParamException
 
 
