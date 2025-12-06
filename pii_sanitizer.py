@@ -123,6 +123,10 @@ class PiiSanitizer:
     def wrap_rephrase(self):
         def decorator(f):
             def inner(message: str) -> str:
+                if message is None:
+                    return None
+                if message == '':
+                    return f(message)
                 anonymized_message, pii_result = self.anonymize_message(message)
                 llm_result = f(anonymized_message)
                 restore_pii_message = self.restore_pii(llm_result, pii_result)
