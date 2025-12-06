@@ -1,0 +1,7 @@
+presidio-analyzer
+presidio-anonymizer
+spacy
+pyarrow
+fastparquet
+psutil
+boto3==1.40.40
