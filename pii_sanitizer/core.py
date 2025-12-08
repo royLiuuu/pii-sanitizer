@@ -30,6 +30,7 @@ class PiiSanitizer:
     # Singleton control
     _instance = None
     _lock = threading.RLock()
+    _initialized = False
 
     running_mode: RunningMode
     bedrock_client: Optional
@@ -94,12 +95,12 @@ class PiiSanitizer:
         """
         Initialize resources only once.
         """
-        if getattr(self, "_initialized", False):
+        if self._initialized:
             return
 
         with self._lock:
             # Double-check locking
-            if getattr(self, "_initialized", False):
+            if self._initialized:
                 return
             self._load_resources(*args, **kwargs)
             self._initialized = True
@@ -116,7 +117,7 @@ class PiiSanitizer:
             new_guardrail_arn = kwargs.get("bedrock_guardrail_arn")
             new_guardrail_version = kwargs.get("bedrock_guardrail_arn_version")
             
-            if self._initialized and new_running_mode == self.running_mode:
+            if self._initialized and new_running_mode == getattr(self, "running_mode", None):
                 logger.info(f"Reloading PiiSanitizer: RunningMode remains {new_running_mode}")
                 
                 # Skip reload for local models if config is unchanged
