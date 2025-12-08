@@ -9,14 +9,14 @@ class InstanceCounterAnonymizer(Operator):
     with an instance counter per entity.
     """
 
-    REPLACING_FORMAT = "<{entity_type}_{index}{suffix}>"  # 修改格式模板
+    REPLACING_FORMAT = "<{entity_type}_{index}{suffix}>"  # Format template
 
     def operate(self, text: str, params: Dict = None) -> str:
         """Anonymize the input text."""
 
         entity_type: str = params["entity_type"]
         
-        # [新增] 获取 mask_token
+        # Get mask_token
         mask_token = params.get("mask_token", "")
         suffix = f"_{mask_token}" if mask_token else ""
 
@@ -25,7 +25,7 @@ class InstanceCounterAnonymizer(Operator):
 
         entity_mapping_for_type = entity_mapping.get(entity_type)
         if not entity_mapping_for_type:
-            # [修改] 传入 suffix
+            # Use suffix
             new_text = self.REPLACING_FORMAT.format(
                 entity_type=entity_type, index=0, suffix=suffix
             )
@@ -37,7 +37,7 @@ class InstanceCounterAnonymizer(Operator):
 
             # 0 based index
             next_index = self._get_last_index(entity_mapping_for_type)
-            # [修改] 传入 suffix
+            # Use suffix
             new_text = self.REPLACING_FORMAT.format(
                 entity_type=entity_type, index=next_index, suffix=suffix
             )

@@ -11,8 +11,7 @@ logger = logging.getLogger(__name__)
 class TestPiiSanitizerIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Workaround: Set default _initialized on class to prevent AttributeError during first init
-        # because reload() checks self._initialized before it's set on the instance.
+        # Workaround for reload() accessing _initialized before init.
         setattr(PiiSanitizer, "_initialized", False)
 
         # Test Data
@@ -226,7 +225,7 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
             )
 
             # We run the flow. Note: This makes actual AWS calls.
-            # The Guardrail MUST be configured to mask PII with format {ENTITY} for the restoration logic to work as currently implemented in PiiSanitizer
+            # Guardrail must use {ENTITY} masking for restoration to work.
             self._test_sanitizer_flow(sanitizer, "BEDROCK_GUARDRAIL")
 
         except Exception as e:

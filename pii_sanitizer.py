@@ -16,7 +16,7 @@ from presidio_anonymizer import AnonymizerEngine, OperatorConfig
 from instance_counter_anonymizer import InstanceCounterAnonymizer
 from invalid_param_exception import InvalidParamException
 
-# 确保 logger 已定义
+# Ensure logger is defined
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +27,7 @@ class RunningMode(Enum):
 
 
 class PiiSanitizer:
-    # 单例控制变量
+    # Singleton control
     _instance = None
     _lock = threading.RLock()
 
@@ -82,7 +82,7 @@ class PiiSanitizer:
 
     def __new__(cls, *args, **kwargs):
         """
-        实现单例模式：确保全局只有一个 PiiSanitizer 实例
+        Singleton implementation.
         """
         if cls._instance is None:
             with cls._lock:
@@ -92,14 +92,13 @@ class PiiSanitizer:
 
     def __init__(self, *args, **kwargs):
         """
-        初始化方法。仅在第一次创建实例时执行资源加载。
+        Initialize resources only once.
         """
-        # 如果已经初始化过，直接返回，避免重复加载模型导致内存飙升
         if getattr(self, "_initialized", False):
             return
 
         with self._lock:
-            # 双重检查，防止并发初始化
+            # Double-check locking
             if getattr(self, "_initialized", False):
                 return
             self._load_resources(*args, **kwargs)
@@ -107,28 +106,25 @@ class PiiSanitizer:
 
     def reload(self, *args, **kwargs):
         """
-        线程安全的重新加载方法。
-        使用 Copy-on-Write 策略：先在局部变量中加载新资源，最后原子替换。
+        Thread-safe resource reload using Copy-on-Write.
         """
-        # 即使业务逻辑不加锁，reload 自身需要防重入
+        # Prevent re-entry during reload
         with self._lock:
-            # 1. 解析新配置 (提取到外层，以便后续更新 self)
+            # 1. Parse new config
             new_running_mode = kwargs.get("running_mode", RunningMode.PRESIDIO)
-            # 提取 Bedrock 相关配置，如果有传入则使用，否则保持 None (或从 kwargs 获取)
-            # 注意：build_bedrock_client 内部会 pop 这些参数，所以最好先提取出来
+            # Extract Bedrock config (build_bedrock_client pops args)
             new_guardrail_arn = kwargs.get("bedrock_guardrail_arn")
             new_guardrail_version = kwargs.get("bedrock_guardrail_arn_version")
             
             if self._initialized and new_running_mode == self.running_mode:
                 logger.info(f"Reloading PiiSanitizer: RunningMode remains {new_running_mode}")
                 
-                # 优化：如果是本地模型模式且已经加载好，通常不需要重载，直接返回以节省资源
+                # Skip reload for local models if config is unchanged
                 if new_running_mode in (RunningMode.PRESIDIO, RunningMode.PRESIDIO_TRANSFORMER):
                     logger.info("Configuration unchanged for local model mode. Skipping reload.")
                     return
                 
-                # 注意：对于 BEDROCK_GUARDRAIL，即使 mode 没变，
-                # 也可能通过 kwargs 更新了 access_key 或 arn，所以这里不 return，继续往下走重建 client
+                # Bedrock mode might need client update even if mode matches
             else:
                  logger.info(f"Reloading PiiSanitizer: Switching from {getattr(self, 'running_mode', 'None')} to {new_running_mode}")
 
@@ -138,7 +134,7 @@ class PiiSanitizer:
             new_anonymizer = None
             new_bedrock_client = None
             
-            # 2. 预加载新资源 (耗时操作放在这里)
+            # 2. Preload resources (heavy lifting)
             match new_running_mode:
                 case RunningMode.PRESIDIO:
                     new_engine = AnalyzerEngine()
@@ -168,18 +164,18 @@ class PiiSanitizer:
                     new_anonymizer = AnonymizerEngine()
                     new_anonymizer.add_anonymizer(InstanceCounterAnonymizer)
                 case RunningMode.BEDROCK_GUARDRAIL:
-                    # 注意：如果只是 mode 没变但 key 变了，build_bedrock_client 会使用新的 kwargs
+                    # Rebuild client if keys changed
                     new_bedrock_client = self.build_bedrock_client(**kwargs)
                 case _:
                     raise InvalidParamException("running mode is not valid")
 
-            # 3. 原子替换 (Atomic Swap)
+            # 3. Atomic swap
             self.running_mode = new_running_mode
             self.engine = new_engine
             self.anonymizer = new_anonymizer
             self.bedrock_client = new_bedrock_client
             
-            # 关键：更新 Bedrock 配置参数
+            # Update Bedrock params
             if new_guardrail_arn:
                 self.bedrock_guardrail_arn = new_guardrail_arn
             if new_guardrail_version:
@@ -190,9 +186,9 @@ class PiiSanitizer:
 
     def _load_resources(self, *args, **kwargs):
         """
-        初始化加载，直接复用 reload 逻辑即可，或者保持原样。
+        Reuse reload logic.
         """
-        # 为了代码复用，初始化可以直接调用 reload
+        # Reuse reload
         self.reload(*args, **kwargs)
 
     def build_bedrock_client(self, **kwargs):
@@ -221,32 +217,24 @@ class PiiSanitizer:
     def wrap_rephrase(self):
         def decorator(f):
             def inner(message: str) -> str:
-                # 注意：这里不需要显式加锁，因为 anonymize_message 和 restore_pii 内部会加锁。
-                # 但为了保证“脱敏->LLM调用->还原”整个流程期间配置不发生变化（原子性），
-                # 可以在这里加锁。但LLM调用通常很慢，锁住会导致全系统阻塞。
-                # 权衡：通常只锁“脱敏”和“还原”这两个瞬间操作即可。如果reload发生了，
-                # 可能导致脱敏用了旧配置，还原用了新配置。
-                # 建议：仅锁方法内部调用，或者在这里显式获取锁（如果接受 LLM 调用期间无法 reload）。
-                
-                # 方案 A: 只锁关键方法（推荐，高并发友好）
-                # reload 可能会在 LLM 调用期间发生，但只要 restore 逻辑兼容即可。
+                # Lock critical methods
                 
                 if message is None:
                     return None
-                # 增加类型检查，确保 message 是字符串
+                # Ensure string input
                 if not isinstance(message, str):
                     raise InvalidParamException(f"Input message must be a string, got {type(message)}")
                 
                 if message == '':
                     return f(message)
                 
-                # 1. 脱敏 (会获取锁)
+                # 1. Anonymize (locks)
                 anonymized_message, pii_result = self.anonymize_message(message)
                 
-                # 2. LLM 调用 (无锁，允许耗时操作)
+                # 2. LLM call (unlocked, potentially slow)
                 llm_result = f(anonymized_message)
                 
-                # 3. 还原 (会获取锁)
+                # 3. Restore (locks)
                 restore_pii_message = self.restore_pii(llm_result, pii_result)
                 return restore_pii_message
 
@@ -255,7 +243,7 @@ class PiiSanitizer:
         return decorator
 
     def anonymize_message(self, message: str):
-        # [新增] 开始计时 & 记录输入元数据
+        # Track stats
         start_time = time.time()
         msg_len = len(message) if message else 0
         logger.debug(f"Starting anonymization. Input length: {msg_len} chars")
@@ -263,13 +251,13 @@ class PiiSanitizer:
         if message is None or message == '':
             return message, None
 
-        # [建议] 配合之前的输入验证
+        # Validate input
         if not isinstance(message, str):
             logger.error(f"Invalid input type: {type(message)}")
             raise InvalidParamException(f"Input message must be a string")
 
-        # [新增] 生成本次请求的随机 Token (8位大写十六进制)
-        # 例如: 'A1B2C3D4'，这确保了每次请求的占位符后缀都是独一无二的
+        # Generate unique request token
+        # e.g. 'A1B2C3D4'
         mask_token = uuid.uuid4().hex[:8].upper()
 
         try:
@@ -281,12 +269,12 @@ class PiiSanitizer:
                         "DEFAULT": OperatorConfig(
                             "entity_counter", {
                                 "entity_mapping": entity_mapping, 
-                                "mask_token": mask_token  # [新增] 传入 token
+                                "mask_token": mask_token  # Pass token
                             }
                         )
                     })
                     
-                    # [新增] 记录统计信息 (无 PII)
+                    # Log stats (no PII)
                     self._log_anonymization_stats(entity_mapping, start_time)
                     
                     return anonymized_text.text, entity_mapping
@@ -298,7 +286,7 @@ class PiiSanitizer:
                         "DEFAULT": OperatorConfig(
                             "entity_counter", {
                                 "entity_mapping": entity_mapping, 
-                                "mask_token": mask_token  # [新增] 传入 token
+                                "mask_token": mask_token  # Pass token
                             }
                         )
                     })
@@ -313,7 +301,7 @@ class PiiSanitizer:
                         content=[{"text": {"text": message}}]
                     )
                     
-                    # [新增] 记录 Bedrock 请求元数据
+                    # Log Bedrock metadata
                     request_id = guardrail_response.get("ResponseMetadata", {}).get("RequestId", "unknown")
                     action = guardrail_response.get('action')
                     logger.info(f"Bedrock Guardrail called. RequestId: {request_id}, Action: {action}")
@@ -322,29 +310,29 @@ class PiiSanitizer:
                         logger.debug("No PII detected by Bedrock.")
                         return message, dict()
 
-                    # [修改] 调用转换函数时，传入 mask_token
+                    # Pass mask_token
                     anonymized_text, pii_result = self.bedrock_guardrail_to_presidio(
                         guardrail_response, 
                         mask_token=mask_token 
                     )
                     
-                    # [新增] 统计 Bedrock 返回的实体
+                    # Log Bedrock entities
                     self._log_anonymization_stats(pii_result, start_time)
                     
                     return anonymized_text, pii_result
 
         except Exception as e:
-            # [新增] 错误日志
+            # Log error
             logger.error(f"Anonymization failed: {str(e)}", exc_info=True)
             raise e
 
     def bedrock_guardrail_to_presidio(self,
                                       bedrock_response: Dict[str, Any],
                                       pii_type_map: Dict[str, str] = None,
-                                      mask_token: str = ""  # <--- [新增] 接收 mask_token 参数
+                                      mask_token: str = ""  # Accepts mask_token
                                       ) -> Tuple[str, Dict[str, Dict[str, str]]]:
 
-        # 基础输入验证
+        # Basic validation
         if not bedrock_response or not isinstance(bedrock_response, dict):
             return "", {}
 
@@ -352,10 +340,9 @@ class PiiSanitizer:
             pii_type_map = self.BEDROCK_TO_PRESIDIO
 
         outputs = bedrock_response.get("outputs", [])
-        # 确保 outputs 列表非空且第一个元素包含 text
+        # Ensure outputs exist
         if not outputs or not isinstance(outputs[0], dict):
-            # 如果没有 outputs，尝试直接返回原始文本或空字符串
-            # 这里假设如果 guardrail 拦截了，outputs 应该有修正后的文本
+            # Return empty if no output
             return "", {}
 
         text = outputs[0].get("text", "")
@@ -364,14 +351,14 @@ class PiiSanitizer:
         if not assessments:
             return text, {}
 
-        # 安全获取嵌套属性
+        # Safe property access
         policy_assessment = assessments[0].get("sensitiveInformationPolicy", {})
         pii_entities = policy_assessment.get("piiEntities", [])
         
         if not pii_entities:
             return text, {}
 
-        # 将实体按类型收集
+        # Group entities by type
         entities_by_type: Dict[str, list] = defaultdict(list)
         for ent in pii_entities:
             if not isinstance(ent, dict):
@@ -381,36 +368,34 @@ class PiiSanitizer:
             if t and match_val:
                 entities_by_type[t].append(match_val)
 
-        # 对每种类型去重，确定 placeholder 编号
-        # 例如 ["roy","roy","ben","roy"] → ["roy","ben"]
+        # Deduplicate per type
         unique_entities_by_type = {
-            t: list(dict.fromkeys(vals))  # 去重但保持顺序
+            t: list(dict.fromkeys(vals))  # Preserve order
             for t, vals in entities_by_type.items()
         }
 
-        # [新增] 准备后缀
+        # Prepare suffix
         suffix = f"_{mask_token}" if mask_token else ""
 
-        # 生成 placeholder 映射
-        # 例如 "<PERSON_0_A1B2C3D4>": "Roy"
+        # Generate placeholder map
+        # e.g. "<PERSON_0_A1B2C3D4>": "Roy"
         pii_mapping: Dict[str, Dict[str, str]] = defaultdict(dict)
 
-        # 反向映射：raw_value → placeholder_token
+        # Reverse map: raw -> placeholder
         reverse_lookup: Dict[str, Dict[str, str]] = defaultdict(dict)
 
         for bedrock_type, vals in unique_entities_by_type.items():
             presidio_type = pii_type_map.get(bedrock_type, bedrock_type)
             for idx, raw in enumerate(vals):
-                # [修改] 拼接 mask_token 到占位符核心部分
+                # Append mask_token
                 placeholder_core = f"{presidio_type}_{idx}{suffix}"
                 placeholder_token = f"<{placeholder_core}>"
 
-                # 保持与 InstanceCounterAnonymizer 结构一致：{ raw: placeholder }
+                # Match InstanceCounterAnonymizer format
                 pii_mapping[presidio_type][raw] = placeholder_token
                 reverse_lookup[presidio_type][raw] = placeholder_token
 
-        # 替换文本逻辑保持不变，因为它是基于 entities_by_type 的顺序来查找值的
-        # 而用于替换的具体字符串是直接从 reverse_lookup 拿的，所以这里不需要改动。
+        # Replace text using reverse_lookup
         used_count_by_type = {t: 0 for t in entities_by_type}
 
         def replace_placeholder(m: re.Match) -> str:
@@ -429,10 +414,10 @@ class PiiSanitizer:
             raw_value = vals[idx]
             presidio_type = pii_type_map.get(bedrock_type, bedrock_type)
 
-            # 防御 reverse_lookup 查找失败
+            # Guard against missing lookup
             type_lookup = reverse_lookup.get(presidio_type)
             if type_lookup and raw_value in type_lookup:
-                return type_lookup[raw_value] # 这里会返回带后缀的新 Token
+                return type_lookup[raw_value] # Returns token with suffix
             return m.group(0)
 
         new_text = self._PLACEHOLDER_PATTERN.sub(replace_placeholder, text)
@@ -444,7 +429,7 @@ class PiiSanitizer:
         if message is None:
             return None
             
-        # 类型检查
+        # Type check
         if not isinstance(message, str):
              raise InvalidParamException(f"Input message must be a string, got {type(message)}")
 
@@ -454,11 +439,10 @@ class PiiSanitizer:
 
     def build_placeholder_map(self, pii_mapping: dict) -> dict:
         """
-        把嵌套的 mapping 展平，得到:
-        {'{PERSON_0}': 'Don', '{PERSON_1}': 'roy', ...}
+        Flatten nested mapping.
         """
         flat = {}
-        # 防御性检查
+        # Defensive check
         if not pii_mapping or not isinstance(pii_mapping, dict):
             return flat
             
@@ -471,9 +455,9 @@ class PiiSanitizer:
 
     def restore_pii(self, masked_message: str, pii_mapping: dict) -> str:
         """
-        根据 mapping 恢复 message 中的 {PERSON_0}、{PHONE_NUMBER_0} 等占位符
+        Restore placeholders.
         """
-        # 边界检查
+        # Boundary checks
         if not masked_message:
             return masked_message
         if not pii_mapping:
@@ -483,25 +467,18 @@ class PiiSanitizer:
         if not flat_map:
             return masked_message
 
-        # 匹配 {PERSON_0} / {PHONE_NUMBER_0} / {EMAIL_ADDRESS_0} 等
-        # [说明]
-        # 原有的正则 r'[<{]([A-Z_0-9]+)[>}]' 已经足够匹配如 <PERSON_0_1A2B3C> 这样的格式
-        # 只要 mask_token 保持是大写字母+数字即可。
-        # 如果你希望支持更复杂的字符（如小写），需要修改正则：
-        # pattern = re.compile(r'[<{]([A-Za-z0-9_]+)[>}]') 
-        
+        # Match placeholders like <PERSON_0_TOKEN>
         pattern = re.compile(r'[<{]([A-Z_0-9]+)[>}]')
 
         def replace(match: re.Match) -> str:
-            placeholder = match.group(0)  # 比如 "{PERSON_0}"
+            placeholder = match.group(0)  # e.g. "{PERSON_0}"
             return flat_map.get(placeholder, placeholder)
 
         return pattern.sub(replace, masked_message)
 
     def _log_anonymization_stats(self, entity_mapping: Dict, start_time: float):
         """
-        安全地记录脱敏统计信息，确保不包含具体 PII 值。
-        entity_mapping 结构通常为: {'PERSON': {'Roy': '<PERSON_0>'}, ...}
+        Log anonymization stats safely (no PII).
         """
         duration = (time.time() - start_time) * 1000
         stats = []
