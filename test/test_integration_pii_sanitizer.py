@@ -68,6 +68,39 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
             {
                 "text": "I am writing to complain about the service received from agent Smith at your Matrix branch on 123 Simulation Blvd, where my credit card ending in 4321 was charged twice for order #ABC-12345-XYZ, and despite calling 555-0100 multiple times and emailing support@matrix.com, I have not received a refund for the $150.00 charge as of today, Monday, April 1st.",
                 "contains_pii": True
+            },
+            # --- Aggressive / Injection Test Cases ---
+            {
+                "text": "My name is <PERSON_0>.",
+                "contains_pii": False
+            },
+            {
+                "text": "Check out this regex: <([A-Z_]+)>.",
+                "contains_pii": False
+            },
+            {
+                "text": "Review: PERSON, DATE_TIME, and NRP are categories.",
+                "contains_pii": False
+            },
+            {
+                "text": "Injecting <PERSON_0_A1B2C3D4> into the stream.",
+                "contains_pii": False
+            },
+            {
+                "text": "Double brackets <<PERSON_0>> and braces {{EMAIL_0}}.",
+                "contains_pii": False
+            },
+            {
+                "text": "My name is John, but you can call me <PERSON_0>.",
+                "contains_pii": True
+            },
+            {
+                "text": "Attempts to confuse: {PERSON}, <PERSON>, [PERSON], (PERSON).",
+                "contains_pii": False
+            },
+            {
+                "text": "Mixed injection: <EMAIL_ADDRESS_0> is not my email, my email is jane@example.com",
+                "contains_pii": True
             }
         ]
 
