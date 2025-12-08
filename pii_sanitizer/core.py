@@ -13,8 +13,8 @@ from presidio_analyzer import AnalyzerEngine
 from presidio_analyzer.nlp_engine import NerModelConfiguration, TransformersNlpEngine
 from presidio_anonymizer import AnonymizerEngine, OperatorConfig
 
-from instance_counter_anonymizer import InstanceCounterAnonymizer
-from invalid_param_exception import InvalidParamException
+from .instance_counter_anonymizer import InstanceCounterAnonymizer
+from .invalid_param_exception import InvalidParamException
 
 # Ensure logger is defined
 logger = logging.getLogger(__name__)
