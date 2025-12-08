@@ -11,8 +11,16 @@ logger = logging.getLogger(__name__)
 class TestPiiSanitizerIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Workaround: Set default _initialized on class to prevent AttributeError during first init
+        # because reload() checks self._initialized before it's set on the instance.
+        setattr(PiiSanitizer, "_initialized", False)
+
         # Test Data
         cls.test_data = [
+            {
+                "text": "My name is <PERSON_0> and my email is john.doe@example.com, hi roy",
+                "contains_pii": True
+            },
             {
                 "text": "My name is John Doe and my email is john.doe@example.com",
                 "contains_pii": True
@@ -67,6 +75,10 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
         cls.region = os.getenv("aws_region", None)
         cls.guardrail_id = os.getenv("guardrail_arn", None)
         cls.guardrail_version = os.getenv("guardrail_version", None)
+
+    def setUp(self):
+        # Reset singleton instance to ensure fresh initialization for each test mode
+        PiiSanitizer._instance = None
 
     def _test_sanitizer_flow(self, sanitizer, mode_name):
         logger.info(f"Testing mode: {mode_name}")
@@ -161,6 +173,12 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
             logger.warning(f"Skipping Transformer test: {e}")
 
     def test_03_bedrock_guardrail_mode(self):
+        self.guardrail_id="arn:aws:bedrock:ap-southeast-2:211125488087:guardrail/evdbjmiiolxc"
+        self.region = "ap-southeast-2"  # Example region
+        self.guardrail_version = "DRAFT"  # Or a specific version number if published
+
+
+
         if not self.guardrail_id:
             logger.info("Skipping Bedrock Guardrail test: BEDROCK_GUARDRAIL_ID not set")
             return
