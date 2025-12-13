@@ -3,6 +3,8 @@ import threading
 import logging
 import time
 import uuid
+import inspect
+import functools
 from collections import defaultdict
 from enum import Enum
 from typing import Optional, Dict, Any, Tuple
@@ -215,31 +217,88 @@ class PiiSanitizer:
         return boto3.client(service_name="bedrock-runtime",
                             region_name=region)
 
-    def wrap_rephrase(self):
+    def wrap_rephrase(self, arg_name: str = None, arg_index: int = 0):
         def decorator(f):
-            def inner(message: str) -> str:
-                # Lock critical methods
+            sig = inspect.signature(f)
+            
+            def _prepare_args(args, kwargs):
+                """
+                Helper to bind arguments, find the target string, and anonymize it.
+                Returns: (bound_args, pii_result, should_return_none)
+                """
+                try:
+                    bound_args = sig.bind(*args, **kwargs)
+                except TypeError:
+                    # Binding failed, let the original function handle the error
+                    return None, None, False
                 
-                if message is None:
-                    return None
-                # Ensure string input
-                if not isinstance(message, str):
-                    raise InvalidParamException(f"Input message must be a string, got {type(message)}")
+                bound_args.apply_defaults()
                 
-                if message == '':
-                    return f(message)
+                target_key = arg_name
+                # Default to arg_index if name not provided
+                if target_key is None:
+                    params = list(sig.parameters.keys())
+                    if 0 <= arg_index < len(params):
+                        target_key = params[arg_index]
                 
-                # 1. Anonymize (locks)
-                anonymized_message, pii_result = self.anonymize_message(message)
-                
-                # 2. LLM call (unlocked, potentially slow)
-                llm_result = f(anonymized_message)
-                
-                # 3. Restore (locks)
-                restore_pii_message = self.restore_pii(llm_result, pii_result)
-                return restore_pii_message
+                if target_key and target_key in bound_args.arguments:
+                    message = bound_args.arguments[target_key]
+                    
+                    if message is None:
+                        return None, None, True # Signal to return None immediately
+                    
+                    # Ensure string input
+                    if not isinstance(message, str):
+                        # 如果目标参数（如 self）不是字符串，这里会报错。
+                        # 对于类方法，通常需要指定 arg_name 或 arg_index=1
+                        raise InvalidParamException(f"Input message must be a string, got {type(message)}")
+                    
+                    if message == '':
+                         return None, None, False # Call original with original args
+                    
+                    # Anonymize
+                    anonymized_message, pii_result = self.anonymize_message(message)
+                    
+                    # Replace argument
+                    bound_args.arguments[target_key] = anonymized_message
+                    return bound_args, pii_result, False
 
-            return inner
+                # Fallback if target argument not found
+                return None, None, False
+
+            # Check if the decorated function is async
+            if inspect.iscoroutinefunction(f):
+                @functools.wraps(f)
+                async def inner(*args, **kwargs):
+                    bound_args, pii_result, return_none = _prepare_args(args, kwargs)
+                    
+                    if return_none:
+                        return None
+                        
+                    if bound_args is None:
+                        return await f(*args, **kwargs)
+                    
+                    # Async call
+                    llm_result = await f(*bound_args.args, **bound_args.kwargs)
+                    
+                    return self.restore_pii(llm_result, pii_result)
+                return inner
+            else:
+                @functools.wraps(f)
+                def inner(*args, **kwargs):
+                    bound_args, pii_result, return_none = _prepare_args(args, kwargs)
+                    
+                    if return_none:
+                        return None
+                        
+                    if bound_args is None:
+                        return f(*args, **kwargs)
+                    
+                    # Sync call
+                    llm_result = f(*bound_args.args, **bound_args.kwargs)
+                    
+                    return self.restore_pii(llm_result, pii_result)
+                return inner
 
         return decorator
 
@@ -295,13 +354,23 @@ class PiiSanitizer:
                     return anonymized_text.text, entity_mapping
 
                 case RunningMode.BEDROCK_GUARDRAIL:
+                    # Protect user inputs that mimic PII placeholders to avoid confusion with Bedrock outputs
+                    protected_message = message
+                    user_placeholders = {}
+                    if '{' in message:
+                        def protect(m):
+                            # Generate a unique token unlikely to trigger PII or confuse Bedrock
+                            token = f"__USER_PH_{uuid.uuid4().hex[:8]}__"
+                            user_placeholders[token] = m.group(0)
+                            return token
+                        
+                        protected_message = self._PLACEHOLDER_PATTERN.sub(protect, message)
                     guardrail_response = self.bedrock_client.apply_guardrail(
                         guardrailIdentifier=self.bedrock_guardrail_arn,
                         guardrailVersion=self.bedrock_guardrail_arn_version,
                         source="INPUT",
-                        content=[{"text": {"text": message}}]
+                        content=[{"text": {"text": protected_message}}]
                     )
-                    
                     # Log Bedrock metadata
                     request_id = guardrail_response.get("ResponseMetadata", {}).get("RequestId", "unknown")
                     action = guardrail_response.get('action')
@@ -316,10 +385,13 @@ class PiiSanitizer:
                         guardrail_response, 
                         mask_token=mask_token 
                     )
-                    
+                    # Restore protected user placeholders
+                    if user_placeholders:
+                        for token, original in user_placeholders.items():
+                            anonymized_text = anonymized_text.replace(token, original)
+
                     # Log Bedrock entities
                     self._log_anonymization_stats(pii_result, start_time)
-                    
                     return anonymized_text, pii_result
 
         except Exception as e:
@@ -427,6 +499,7 @@ class PiiSanitizer:
 
 
     def deanonymize_message(self, message: str, entity_mapping):
+        
         if message is None:
             return None
             

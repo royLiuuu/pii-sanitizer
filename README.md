@@ -84,29 +84,46 @@ anonymized, mapping = sanitizer.anonymize_message(text)
 
 ### 4. Decorator for Automatic Sanitization
 
-You can use the `@wrap_rephrase` decorator to automatically sanitize arguments passed to a function and restore PII in the return value. This is ideal for wrapping LLM calls.
+You can use the `@wrap_rephrase` decorator to automatically sanitize arguments passed to a function and restore PII in the return value. This is ideal for wrapping LLM calls. It supports both synchronous and asynchronous functions (`async def`).
+
+#### Parameters
+- `arg_name` (str, optional): The name of the argument to anonymize. Useful for class methods or specific keyword arguments.
+- `arg_index` (int, optional): The positional index of the argument to anonymize (default: 0).
+
+#### Basic Function Example
 
 ```python
 sanitizer = PiiSanitizer(running_mode=RunningMode.PRESIDIO)
 
 @sanitizer.wrap_rephrase()
 def chat_with_llm(message: str) -> str:
-    # The 'message' here is already anonymized (e.g., "Hello {PERSON_0}")
-    print(f"Processing: {message}")
-    
-    # Simulate LLM logic (e.g., returning the text or a modification)
-    return f"I received your message: {message}"
+    # 'message' is already anonymized here
+    return f"Processed: {message}"
 
-# Usage
 response = chat_with_llm("Hello, I am Alice.")
+# Output: "Processed: Hello, I am Alice." (PII restored)
+```
 
-# The decorator handles the flow:
-# 1. "Hello, I am Alice." -> "Hello, I am {PERSON_0}."
-# 2. chat_with_llm runs with anonymized text.
-# 3. Returns "I received your message: Hello, I am {PERSON_0}."
-# 4. Decorator restores PII -> "I received your message: Hello, I am Alice."
+#### Class Method & Async Example
 
-print(response)
+For class methods, use `arg_name` or `arg_index` (remember `self` is index 0).
+
+```python
+class ChatService:
+    def __init__(self):
+        self.sanitizer = PiiSanitizer(running_mode=RunningMode.PRESIDIO)
+
+    # Use arg_name to target the specific parameter
+    @PiiSanitizer(running_mode=RunningMode.PRESIDIO).wrap_rephrase(arg_name="content")
+    async def process_async(self, content: str, model: str = "gpt-4") -> str:
+        # 'content' is anonymized
+        # 'model' remains as is
+        return f"LLM ({model}) says: {content}"
+
+service = ChatService()
+import asyncio
+response = asyncio.run(service.process_async(content="Contact John at 555-1234"))
+# Output: "LLM (gpt-4) says: Contact John at 555-1234"
 ```
 
 ## Configuration

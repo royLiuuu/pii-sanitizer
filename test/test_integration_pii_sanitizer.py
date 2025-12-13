@@ -1,6 +1,7 @@
 import unittest
 import os
 import logging
+import time
 from pii_sanitizer import PiiSanitizer, RunningMode
 
 # Setup basic logging
@@ -17,15 +18,23 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
         # Test Data
         cls.test_data = [
             {
+                "text": "My name is {}, but you can call me John.",
+                "contains_pii": True
+            },
+            {
+                "text": "Please contact us at 555-0199 for support.",
+                "contains_pii": True
+            },
+            {
+                "text": "My name is {NAME}, but you can call me John.",
+                "contains_pii": True
+            },
+            {
                 "text": "My name is <PERSON_0> and my email is john.doe@example.com, hi roy",
                 "contains_pii": True
             },
             {
                 "text": "My name is John Doe and my email is john.doe@example.com",
-                "contains_pii": True
-            },
-            {
-                "text": "Please contact us at 555-0199 for support.",
                 "contains_pii": True
             },
             {
@@ -90,10 +99,6 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
                 "contains_pii": False
             },
             {
-                "text": "My name is John, but you can call me <PERSON_0>.",
-                "contains_pii": True
-            },
-            {
                 "text": "Attempts to confuse: {PERSON}, <PERSON>, [PERSON], (PERSON).",
                 "contains_pii": False
             },
@@ -123,6 +128,8 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
             logger.info(f"--- {case_label} ---")
             logger.info(f"Original: {message}")
 
+            # Start timing
+            start_time = time.time()
             error_msg = None
             try:
                 anonymized, mapping = sanitizer.anonymize_message(message)
@@ -130,50 +137,67 @@ class TestPiiSanitizerIntegration(unittest.TestCase):
                 logger.info(f"Mapping: {mapping}")
 
                 # Basic verification
-                if item["contains_pii"] and mapping:
-                    if message == anonymized:
-                        error_msg = "PII detected but text unchanged."
+                if item["contains_pii"]:
+                    if not mapping:
+                        # Fail if we expected PII but got none (prevents false passes on no-op)
+                        error_msg = "Expected PII detection, but mapping was empty."
+                        logger.error(f"{case_label}: {error_msg}")
+                    elif message == anonymized:
+                        error_msg = "PII detected (mapping present) but text unchanged."
+                        logger.error(f"{case_label}: {error_msg}")
+                else:
+                    if mapping:
+                        error_msg = f"Expected NO PII, but mapping returned: {mapping}"
+                        logger.error(f"{case_label}: {error_msg}")
+                    elif message != anonymized:
+                        error_msg = "Expected NO PII, but text was modified."
                         logger.error(f"{case_label}: {error_msg}")
 
                 # Deanonymize
-                restored = sanitizer.deanonymize_message(anonymized, mapping)
-                logger.info(f"Restored: {restored}")
+                if not error_msg:
+                    restored = sanitizer.deanonymize_message(anonymized, mapping)
+                    logger.info(f"Restored: {restored}")
 
-                # Check restoration
-                if not error_msg and message and message != restored:
-                    error_msg = f"Restoration mismatch.\n   Original: '{message}'\n   Restored: '{restored}'"
-                    logger.error(f"{case_label}: {error_msg}")
+                    # Check restoration
+                    if message != restored:
+                        error_msg = f"Restoration mismatch.\n   Original: '{message}'\n   Restored: '{restored}'"
+                        logger.error(f"{case_label}: {error_msg}")
 
             except Exception as e:
                 error_msg = f"Exception: {str(e)}"
                 logger.error(f"{case_label}: {error_msg}")
 
+            # End timing
+            execution_time = time.time() - start_time
+            logger.info(f"Execution time: {execution_time:.4f}s")
+
             if error_msg:
                 failed_cases.append(f"{case_label}: {error_msg}")
-                results.append((case_label, "FAIL", error_msg))
+                results.append((case_label, "FAIL", error_msg, execution_time))
             else:
-                results.append((case_label, "PASS", ""))
+                results.append((case_label, "PASS", "", execution_time))
 
         # --- Print Overview ---
         total = len(self.test_data)
         passed = len([r for r in results if r[1] == "PASS"])
         failed = len(failed_cases)
+        total_time = sum(r[3] for r in results)
 
         overview_lines = [
             f"\n{'=' * 50}",
             f"Test Overview for {mode_name}",
             f"{'=' * 50}",
-            f"Total: {total} | Passed: {passed} | Failed: {failed}",
+            f"Total: {total} | Passed: {passed} | Failed: {failed} | Total Time: {total_time:.4f}s",
             f"{'-' * 50}"
         ]
 
-        for label, status, detail in results:
+        for label, status, detail, exec_time in results:
             if status == "PASS":
-                overview_lines.append(f"{label}: {status}")
+                overview_lines.append(f"{label}: {status} ({exec_time:.4f}s)")
             else:
                 # Take first line of error for summary
                 short_error = detail.split('\n')[0]
-                overview_lines.append(f"{label}: {status} - {short_error}")
+                overview_lines.append(f"{label}: {status} ({exec_time:.4f}s) - {short_error}")
 
         overview_lines.append(f"{'=' * 50}")
         logger.info("\n".join(overview_lines))
